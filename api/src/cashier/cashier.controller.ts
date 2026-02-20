@@ -1,0 +1,187 @@
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { z } from 'zod';
+import { ZodValidationPipe } from '../common/zod.pipe';
+import { CashierService } from './cashier.service';
+
+type CreateSaleBody = {
+  buyerType: 'EMPLOYEE' | 'GENERAL';
+  employeeCode?: string;
+  useWallet?: boolean;
+  cashPaid?: number;
+  items: { productId: string; qty: number }[];
+  note?: string;
+};
+
+type DebtPayBody = {
+  employeeCode: string;
+  amount: number;
+  note?: string;
+};
+
+type StockInBody = {
+  productId: string;
+  qty: number;
+  note: string;
+};
+
+type StockAdjustBody = {
+  productId: string;
+  qty: number;
+  note: string;
+};
+
+type WalletAdjustBody = {
+  employeeCode: string;
+  mode: 'ADD' | 'SUB' | 'SET';
+  amount: number;
+  note?: string;
+};
+
+const CreateSaleSchema = z
+  .object({
+    buyerType: z.enum(['EMPLOYEE', 'GENERAL']),
+    employeeCode: z.string().min(3).optional(),
+    useWallet: z.boolean().optional(),
+    cashPaid: z.number().int().nonnegative().optional(),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().min(1),
+          qty: z.number().int().positive(),
+        }),
+      )
+      .min(1),
+    note: z.string().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.buyerType === 'EMPLOYEE') {
+      if (!val.employeeCode) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'employeeCode wajib untuk buyerType=EMPLOYEE',
+          path: ['employeeCode'],
+        });
+      }
+    }
+
+    if (val.buyerType === 'GENERAL') {
+      if (val.cashPaid === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'cashPaid wajib untuk buyerType=GENERAL',
+          path: ['cashPaid'],
+        });
+      }
+    }
+  });
+
+const DebtPaySchema = z.object({
+  employeeCode: z.string().min(3),
+  amount: z.number().int().positive(),
+  note: z.string().optional(),
+});
+
+const StockInSchema = z.object({
+  productId: z.string().min(1),
+  qty: z.number().int().positive(),
+  note: z.string().min(3),
+});
+
+const StockAdjustSchema = z.object({
+  productId: z.string().min(1),
+  qty: z.number().int(), // boleh negatif/positif
+  note: z.string().min(3),
+});
+
+const WalletAdjustSchema = z.object({
+  employeeCode: z.string().min(3),
+  mode: z.enum(['ADD', 'SUB', 'SET']),
+  amount: z.number().int().nonnegative(),
+  note: z.string().optional(),
+});
+
+@Controller('cashier')
+export class CashierController {
+  constructor(private readonly cashier: CashierService) {}
+
+  @Get('summary/dashboard')
+  dashboardSummary() {
+    return this.cashier.getDashboardSummary();
+  }
+
+  @Get('summary/today')
+  todaySummary() {
+    return this.cashier.getTodaySummary();
+  }
+
+  @Get('employee-balance')
+  employeeBalance(@Query('employeeCode') employeeCode: string) {
+    return this.cashier.getEmployeeBalanceByCode(employeeCode);
+  }
+
+  @Get('employee-history')
+  employeeHistory(
+    @Query('employeeCode') employeeCode: string,
+    @Query('take') take?: string,
+  ) {
+    const parsedTake = Number(take);
+    const safeTake = Number.isFinite(parsedTake)
+      ? Math.min(Math.max(Math.trunc(parsedTake), 1), 100)
+      : 30;
+    return this.cashier.getEmployeeSaleHistory(employeeCode, safeTake);
+  }
+
+  @Get('wallet-monitor')
+  walletMonitor(@Query('q') q?: string) {
+    return this.cashier.getWalletMonitor(q);
+  }
+
+  @Get('wallet-history')
+  walletHistory(
+    @Query('employeeCode') employeeCode?: string,
+    @Query('take') take?: string,
+  ) {
+    const parsedTake = Number(take);
+    const safeTake = Number.isFinite(parsedTake)
+      ? Math.min(Math.max(Math.trunc(parsedTake), 1), 200)
+      : 50;
+    return this.cashier.getWalletHistory(employeeCode, safeTake);
+  }
+
+  @Post('sale')
+  createSale(
+    @Body(new ZodValidationPipe(CreateSaleSchema)) body: CreateSaleBody,
+  ) {
+    return this.cashier.createSale(body);
+  }
+
+  @Post('debt-pay')
+  debtPay(@Body(new ZodValidationPipe(DebtPaySchema)) body: DebtPayBody) {
+    return this.cashier.payDebt(body.employeeCode, body.amount, body.note);
+  }
+
+  @Post('stock-in')
+  stockIn(@Body(new ZodValidationPipe(StockInSchema)) body: StockInBody) {
+    return this.cashier.stockIn(body.productId, body.qty, body.note);
+  }
+
+  @Post('stock-adjust')
+  stockAdjust(
+    @Body(new ZodValidationPipe(StockAdjustSchema)) body: StockAdjustBody,
+  ) {
+    return this.cashier.stockAdjust(body.productId, body.qty, body.note);
+  }
+
+  @Post('wallet-adjust')
+  walletAdjust(
+    @Body(new ZodValidationPipe(WalletAdjustSchema))
+    body: WalletAdjustBody,
+  ) {
+    return this.cashier.adjustWallet(
+      body.employeeCode,
+      body.mode,
+      body.amount,
+      body.note,
+    );
+  }
+}

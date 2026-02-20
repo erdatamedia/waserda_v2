@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: waserda_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: waserda
+      POSTGRES_PASSWORD: waserda123
+      POSTGRES_DB: waserda
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - waserda_db_data:/var/lib/postgresql/data
+volumes:
+  waserda_db_data:

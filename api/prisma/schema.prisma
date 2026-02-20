@@ -1,0 +1,211 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  CASHIER
+  EMPLOYEE
+}
+
+enum AccountTxnType {
+  WALLET_CREDIT // tambah saldo wajib (jatah bulanan / koreksi)
+  WALLET_DEBIT // pemakaian saldo wajib saat belanja
+  DEBT_ADD // hutang bertambah saat saldo tidak cukup
+  DEBT_PAY // cicilan hutang
+}
+
+enum SaleSource {
+  CASHIER_WEB
+  MOBILE
+}
+
+enum BuyerType {
+  EMPLOYEE
+  GENERAL
+}
+
+enum StockTxnType {
+  IN
+  ADJUST
+  OUT
+}
+
+model ProductCategoryMaster {
+  code      String @id
+  name      String
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  products Product[]
+}
+
+model Employee {
+  id           String  @id @default(uuid())
+  email        String? @unique
+  name         String
+  employeeCode String  @unique
+  isActive     Boolean @default(true)
+
+  role Role @default(CASHIER) // untuk pegawai biasa nanti bisa tetap CASHIER? (atau ubah jadi EMPLOYEE)
+  // kalau mau lebih rapi: enum Role tambah EMPLOYEE, tapi kita keep simpel dulu
+
+  pin          EmployeePin?
+  devices      Device[]
+  sales        Sale[]
+  txns         AccountTxn[]
+  walletMonths EmployeeWalletMonth[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model EmployeePin {
+  employeeId String   @id
+  pinHash    String
+  updatedAt  DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+}
+
+model Device {
+  id         String   @id @default(uuid())
+  employeeId String
+  deviceId   String
+  isRevoked  Boolean  @default(false)
+  lastSeenAt DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, deviceId])
+}
+
+model OtpCode {
+  id        String   @id @default(uuid())
+  email     String
+  codeHash  String
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+/**
+ * Snapshot bulanan (opsional).
+ * Kita pakai untuk:
+ * - menyimpan jatah saldo wajib tiap bulan (credit bulanan)
+ * - caching ringkasan saldo/hutang per bulan bila dibutuhkan
+ * Sumber kebenaran tetap AccountTxn (ledger).
+ */
+model EmployeeWalletMonth {
+  id               String   @id @default(uuid())
+  employeeId       String
+  month            DateTime // selalu tanggal 1
+  monthlyAllowance Int      @default(0) // jatah bulan ini (untuk policy reset tgl 1)
+  note             String?
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, month])
+  @@index([month])
+}
+
+/**
+ * Ledger untuk saldo wajib & hutang.
+ * Semua perubahan tercatat di sini => aman untuk carry over dan cicilan.
+ */
+model AccountTxn {
+  id         String         @id @default(uuid())
+  employeeId String
+  type       AccountTxnType
+  amount     Int
+  refSaleId  String?
+  note       String?
+  createdAt  DateTime       @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, createdAt])
+  @@index([type])
+}
+
+model Product {
+  id          String          @id @default(uuid())
+  name        String
+  category    String          @default("OTHER")
+  imageUrl    String?
+  barcode     String?         @unique
+  price       Int
+  discountPct Int             @default(0)
+  taxPct      Int             @default(0)
+  stock       Int             @default(0)
+  isActive    Boolean         @default(true)
+
+  saleItems SaleItem[]
+  stockTxns StockTxn[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categoryMaster ProductCategoryMaster @relation(fields: [category], references: [code], onDelete: Restrict, onUpdate: Cascade)
+}
+
+model Sale {
+  id        String     @id @default(uuid())
+
+  // buyer can be EMPLOYEE (linked to Employee) or GENERAL (walk-in)
+  buyerType BuyerType  @default(EMPLOYEE)
+  employeeId String?
+
+  total           Int
+
+  // wallet (saldo wajib) that gets deducted when buyerType=EMPLOYEE
+  paidByMandatory Int      @default(0)
+
+  // optional cash paid (can be used for EMPLOYEE or GENERAL)
+  cashPaid        Int      @default(0)
+
+  // if total not covered by wallet+cash, it becomes debt (only meaningful for EMPLOYEE)
+  addedDebt       Int      @default(0)
+
+  source          SaleSource @default(CASHIER_WEB)
+  note            String?
+
+  createdAt DateTime @default(now())
+
+  employee Employee?  @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  items    SaleItem[]
+
+  @@index([buyerType, createdAt])
+  @@index([employeeId, createdAt])
+}
+
+model SaleItem {
+  id        String @id @default(uuid())
+  saleId    String
+  productId String
+  qty       Int
+  price     Int
+
+  sale    Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+}
+
+model StockTxn {
+  id        String       @id @default(uuid())
+  productId String
+  type      StockTxnType
+  qty       Int          // bisa positif/negatif untuk ADJUST
+  note      String
+  createdAt DateTime     @default(now())
+
+  product   Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt])
+}

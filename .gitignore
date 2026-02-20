@@ -1,0 +1,32 @@
+# exclude mobile project entirely
+mobile/
+
+# dependencies
+**/node_modules/
+
+# build outputs
+**/dist/
+**/.next/
+**/build/
+**/.turbo/
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# env / secrets
+**/.env
+**/.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.iml
+
+# misc
+coverage/
