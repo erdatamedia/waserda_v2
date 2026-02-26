@@ -32,3 +32,6 @@ pnpm-debug.log*
 coverage/
 
 .git-backup/
+
+# allow env example templates
+!**/.env.*.example
