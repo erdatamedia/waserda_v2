@@ -378,7 +378,15 @@ export class StockService {
   }
 
   private parseIntSafe(v: string, def = 0): number {
-    const n = Number(v);
+    const raw = String(v ?? '').trim();
+    if (!raw) return def;
+    const normalized = raw
+      .replace(/rp/gi, '')
+      .replace(/[.\s]/g, '')
+      .replace(',', '')
+      .replace(/[^0-9-]/g, '');
+    if (!normalized || normalized === '-') return def;
+    const n = Number(normalized);
     return Number.isFinite(n) ? Math.trunc(n) : def;
   }
 
