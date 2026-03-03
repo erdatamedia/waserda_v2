@@ -1,5 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { AccountTxnType, SaleSource } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { AccountTxnType, Prisma, SaleSource } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -537,6 +537,323 @@ export class CashierService {
     });
   }
 
+  private async getGeneralCustomerTx(tx: Prisma.TransactionClient) {
+    return tx.employee.upsert({
+      where: { employeeCode: 'GENERAL' },
+      update: { isActive: true },
+      create: {
+        employeeCode: 'GENERAL',
+        name: 'Pembeli Umum',
+        email: 'general@waserda.local',
+        isActive: true,
+      },
+    });
+  }
+
+  private async getEmployeeWalletBalanceTx(
+    tx: Prisma.TransactionClient,
+    employeeId: string,
+  ): Promise<number> {
+    const sums = await tx.accountTxn.groupBy({
+      by: ['type'],
+      where: { employeeId },
+      _sum: { amount: true },
+    });
+    const find = (type: AccountTxnType) =>
+      sums.find((x) => x.type === type)?._sum.amount ?? 0;
+    return find(AccountTxnType.WALLET_CREDIT) - find(AccountTxnType.WALLET_DEBIT);
+  }
+
+  private calcUnitFinalPrice(price: number, discountPct: number, taxPct: number) {
+    const discountPerUnit = Math.trunc((price * discountPct) / 100);
+    const taxablePerUnit = price - discountPerUnit;
+    const taxPerUnit = Math.trunc((taxablePerUnit * taxPct) / 100);
+    return taxablePerUnit + taxPerUnit;
+  }
+
+  async listSales(page = 1, pageSize = 20) {
+    const skip = (page - 1) * pageSize;
+    const [total, rows] = await Promise.all([
+      this.prisma.sale.count(),
+      this.prisma.sale.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize,
+        select: {
+          id: true,
+          buyerType: true,
+          total: true,
+          cashPaid: true,
+          paidByMandatory: true,
+          addedDebt: true,
+          note: true,
+          createdAt: true,
+          employee: {
+            select: {
+              id: true,
+              name: true,
+              employeeCode: true,
+            },
+          },
+          items: { select: { qty: true } },
+        },
+      }),
+    ]);
+
+    return {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      rows: rows.map((r) => ({
+        id: r.id,
+        buyerType: r.buyerType,
+        total: r.total,
+        cashPaid: r.cashPaid,
+        paidByMandatory: r.paidByMandatory,
+        addedDebt: r.addedDebt,
+        note: r.note,
+        createdAt: r.createdAt,
+        employee: r.employee,
+        itemCount: r.items.reduce((sum, x) => sum + x.qty, 0),
+      })),
+    };
+  }
+
+  async getSaleDetail(saleId: string) {
+    const sale = await this.prisma.sale.findUnique({
+      where: { id: saleId },
+      include: {
+        employee: {
+          select: { id: true, name: true, employeeCode: true },
+        },
+        items: {
+          include: {
+            product: {
+              select: { id: true, name: true, barcode: true, category: true },
+            },
+          },
+        },
+      },
+    });
+    if (!sale) throw new NotFoundException('Transaksi tidak ditemukan');
+
+    const linkedTxns = await this.prisma.accountTxn.findMany({
+      where: { refSaleId: sale.id },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        type: true,
+        amount: true,
+        note: true,
+        createdAt: true,
+      },
+    });
+
+    return {
+      ...sale,
+      linkedTxns,
+    };
+  }
+
+  async updateSale(
+    saleId: string,
+    input: {
+      buyerType: 'EMPLOYEE' | 'GENERAL';
+      employeeCode?: string;
+      useWallet?: boolean;
+      cashPaid?: number;
+      items: { productId: string; qty: number }[];
+      note?: string;
+    },
+  ) {
+    const {
+      buyerType,
+      employeeCode,
+      useWallet = true,
+      cashPaid = 0,
+      items,
+      note,
+    } = input;
+
+    return await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const existing = await tx.sale.findUnique({
+        where: { id: saleId },
+        include: {
+          items: true,
+        },
+      });
+      if (!existing) throw new NotFoundException('Transaksi tidak ditemukan');
+
+      // rollback efek transaksi lama terlebih dulu
+      for (const it of existing.items) {
+        await tx.product.update({
+          where: { id: it.productId },
+          data: { stock: { increment: it.qty } },
+        });
+      }
+      await tx.accountTxn.deleteMany({ where: { refSaleId: saleId } });
+
+      const productIds = items.map((i) => i.productId);
+      const products = await tx.product.findMany({
+        where: { id: { in: productIds }, isActive: true },
+      });
+      if (products.length !== productIds.length) {
+        throw new BadRequestException('Ada produk yang tidak valid / nonaktif');
+      }
+      const productMap = new Map(products.map((p) => [p.id, p]));
+
+      let total = 0;
+      for (const it of items) {
+        const p = productMap.get(it.productId);
+        if (!p) throw new BadRequestException('Produk tidak valid');
+        if (p.stock < it.qty) {
+          throw new BadRequestException(`Stok tidak cukup: ${p.name}`);
+        }
+        const unitFinal = this.calcUnitFinalPrice(p.price, p.discountPct, p.taxPct);
+        total += unitFinal * it.qty;
+      }
+
+      let employeeId: string | null = null;
+      let cashApplied = 0;
+      let paidByMandatory = 0;
+      let addedDebt = 0;
+      let change = 0;
+
+      if (buyerType === 'GENERAL') {
+        if (!Number.isInteger(cashPaid) || cashPaid < total) {
+          throw new BadRequestException(
+            'cashPaid harus bilangan bulat dan >= total',
+          );
+        }
+        const generalEmp = await this.getGeneralCustomerTx(tx);
+        employeeId = generalEmp.id;
+        cashApplied = total;
+        change = cashPaid - total;
+      } else {
+        if (!employeeCode) {
+          throw new BadRequestException(
+            'employeeCode wajib untuk buyerType=EMPLOYEE',
+          );
+        }
+        const emp = await tx.employee.findUnique({
+          where: { employeeCode },
+        });
+        if (!emp || !emp.isActive) {
+          throw new BadRequestException('Pegawai tidak ditemukan / nonaktif');
+        }
+        employeeId = emp.id;
+
+        if (!Number.isInteger(cashPaid) || cashPaid < 0) {
+          throw new BadRequestException('cashPaid harus bilangan bulat dan >= 0');
+        }
+        const walletBalance = await this.getEmployeeWalletBalanceTx(tx, emp.id);
+        paidByMandatory = useWallet
+          ? Math.max(0, Math.min(walletBalance, total))
+          : 0;
+        const remainingAfterWallet = total - paidByMandatory;
+        cashApplied = Math.max(0, Math.min(cashPaid, remainingAfterWallet));
+        addedDebt = remainingAfterWallet - cashApplied;
+        change = cashPaid - cashApplied;
+      }
+
+      for (const it of items) {
+        await tx.product.update({
+          where: { id: it.productId },
+          data: { stock: { decrement: it.qty } },
+        });
+      }
+
+      await tx.saleItem.deleteMany({ where: { saleId } });
+      await tx.saleItem.createMany({
+        data: items.map((it) => {
+          const p = productMap.get(it.productId)!;
+          return {
+            saleId,
+            productId: p.id,
+            qty: it.qty,
+            price: this.calcUnitFinalPrice(p.price, p.discountPct, p.taxPct),
+          };
+        }),
+      });
+
+      await tx.sale.update({
+        where: { id: saleId },
+        data: {
+          buyerType,
+          employeeId,
+          total,
+          cashPaid: cashApplied,
+          paidByMandatory,
+          addedDebt,
+          source: SaleSource.CASHIER_WEB,
+          note: note?.trim() || null,
+        },
+      });
+
+      if (buyerType === 'EMPLOYEE' && employeeId) {
+        if (paidByMandatory > 0) {
+          await tx.accountTxn.create({
+            data: {
+              employeeId,
+              type: AccountTxnType.WALLET_DEBIT,
+              amount: paidByMandatory,
+              refSaleId: saleId,
+              note: note ? `SALE_EDIT:${note}` : 'SALE_EDIT',
+            },
+          });
+        }
+        if (addedDebt > 0) {
+          await tx.accountTxn.create({
+            data: {
+              employeeId,
+              type: AccountTxnType.DEBT_ADD,
+              amount: addedDebt,
+              refSaleId: saleId,
+              note: note ? `DEBT_FROM_SALE_EDIT:${note}` : 'DEBT_FROM_SALE_EDIT',
+            },
+          });
+        }
+      }
+
+      return {
+        ok: true,
+        saleId,
+        buyerType,
+        total,
+        cashPaid,
+        change,
+        paidByMandatory,
+        addedDebt,
+      };
+    });
+  }
+
+  async deleteSale(saleId: string) {
+    return await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const sale = await tx.sale.findUnique({
+        where: { id: saleId },
+        include: { items: true },
+      });
+      if (!sale) throw new NotFoundException('Transaksi tidak ditemukan');
+
+      for (const it of sale.items) {
+        await tx.product.update({
+          where: { id: it.productId },
+          data: { stock: { increment: it.qty } },
+        });
+      }
+      await tx.accountTxn.deleteMany({ where: { refSaleId: saleId } });
+      await tx.sale.delete({ where: { id: saleId } });
+
+      return {
+        ok: true,
+        saleId,
+        restoredItems: sale.items.length,
+      };
+    });
+  }
+
   async getEmployeeBalanceByCode(employeeCode: string) {
     const emp = await this.getEmployeeByCode(employeeCode);
 
@@ -849,11 +1166,14 @@ export class CashierService {
 
         const sale = await tx.sale.create({
           data: {
+            buyerType: 'GENERAL',
             employeeId: generalEmp.id,
             total,
+            cashPaid: total,
             paidByMandatory: 0,
             addedDebt: 0,
             source: SaleSource.CASHIER_WEB,
+            note: note?.trim() || null,
             items: {
               create: items.map((it) => {
                 const p = productMap.get(it.productId)!;
@@ -925,11 +1245,14 @@ export class CashierService {
 
       const sale = await tx.sale.create({
         data: {
+          buyerType: 'EMPLOYEE',
           employeeId: emp.id,
           total,
+          cashPaid: cashApplied,
           paidByMandatory: walletApplied,
           addedDebt,
           source: SaleSource.CASHIER_WEB,
+          note: note?.trim() || null,
           items: {
             create: items.map((it) => {
               const p = productMap.get(it.productId)!;

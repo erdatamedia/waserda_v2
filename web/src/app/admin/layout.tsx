@@ -37,7 +37,10 @@ const navGroups: NavGroup[] = [
   {
     key: "kasir",
     label: "Kasir",
-    items: [{ href: "/admin/cashier", label: "Kasir" }],
+    items: [
+      { href: "/admin/cashier", label: "Kasir" },
+      { href: "/admin/cashier/history", label: "Riwayat Transaksi" },
+    ],
   },
 ];
 

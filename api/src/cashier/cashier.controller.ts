@@ -2,7 +2,10 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
+  Param,
+  Patch,
   Post,
   Query,
   Res,
@@ -108,6 +111,39 @@ const WalletAdjustSchema = z.object({
   amount: z.number().int().nonnegative(),
   note: z.string().optional(),
 });
+
+const UpdateSaleSchema = z
+  .object({
+    buyerType: z.enum(['EMPLOYEE', 'GENERAL']),
+    employeeCode: z.string().min(3).optional(),
+    useWallet: z.boolean().optional(),
+    cashPaid: z.number().int().nonnegative().optional(),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().min(1),
+          qty: z.number().int().positive(),
+        }),
+      )
+      .min(1),
+    note: z.string().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.buyerType === 'EMPLOYEE' && !val.employeeCode) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'employeeCode wajib untuk buyerType=EMPLOYEE',
+        path: ['employeeCode'],
+      });
+    }
+    if (val.buyerType === 'GENERAL' && val.cashPaid === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'cashPaid wajib untuk buyerType=GENERAL',
+        path: ['cashPaid'],
+      });
+    }
+  });
 
 @Controller('cashier')
 export class CashierController {
@@ -218,6 +254,43 @@ export class CashierController {
   @Get('employee-balance')
   employeeBalance(@Query('employeeCode') employeeCode: string) {
     return this.cashier.getEmployeeBalanceByCode(employeeCode);
+  }
+
+  @Get('sales')
+  sales(@Query('page') page?: string, @Query('pageSize') pageSize?: string) {
+    const p = Number(page);
+    const s = Number(pageSize);
+    const safePage = Number.isFinite(p) ? Math.max(1, Math.trunc(p)) : 1;
+    const safePageSize = Number.isFinite(s)
+      ? Math.min(100, Math.max(1, Math.trunc(s)))
+      : 20;
+    return this.cashier.listSales(safePage, safePageSize);
+  }
+
+  @Get('sales/:id')
+  saleDetail(@Param('id') id: string) {
+    return this.cashier.getSaleDetail(id);
+  }
+
+  @Patch('sales/:id')
+  updateSale(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(UpdateSaleSchema))
+    body: {
+      buyerType: 'EMPLOYEE' | 'GENERAL';
+      employeeCode?: string;
+      useWallet?: boolean;
+      cashPaid?: number;
+      items: { productId: string; qty: number }[];
+      note?: string;
+    },
+  ) {
+    return this.cashier.updateSale(id, body);
+  }
+
+  @Delete('sales/:id')
+  deleteSale(@Param('id') id: string) {
+    return this.cashier.deleteSale(id);
   }
 
   @Get('employee-history')
