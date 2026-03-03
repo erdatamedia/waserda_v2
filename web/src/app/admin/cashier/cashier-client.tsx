@@ -260,7 +260,19 @@ export default function CashierClient() {
       for (const track of streamRef.current.getTracks()) track.stop();
       streamRef.current = null;
     }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
     setScanMode(null);
+  }
+
+  async function waitForVideoElement(timeoutMs = 1200) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (videoRef.current) return videoRef.current;
+      await new Promise((r) => setTimeout(r, 16));
+    }
+    return null;
   }
 
   function findProductByBarcode(code: string): Product | undefined {
@@ -323,9 +335,15 @@ export default function CashierClient() {
       streamRef.current = stream;
       setScanMode(mode);
 
-      const video = videoRef.current;
-      if (!video) return;
+      const video = await waitForVideoElement();
+      if (!video) {
+        setScanError("Elemen video scanner belum siap. Coba ulangi scan.");
+        stopScanner();
+        return;
+      }
       video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
       await video.play();
 
       const detector = new Detector({
@@ -828,7 +846,13 @@ export default function CashierClient() {
                 Tutup
               </button>
             </div>
-            <video ref={videoRef} className="h-64 w-full rounded-xl bg-black object-cover" />
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              playsInline
+              className="h-64 w-full rounded-xl bg-black object-cover"
+            />
             <div className="mt-2 text-xs text-gray-500">
               {scanMode === "employee"
                 ? "Arahkan kamera ke QR di HP pegawai."

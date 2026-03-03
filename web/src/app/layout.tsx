@@ -19,9 +19,9 @@ export const metadata: Metadata = {
   },
   description: "Sistem operasional manajemen toko Waserda",
   icons: {
-    icon: "/icon_waserda.png",
-    shortcut: "/icon_waserda.png",
-    apple: "/icon_waserda.png",
+    icon: "/icon_waserda.png?v=2",
+    shortcut: "/icon_waserda.png?v=2",
+    apple: "/icon_waserda.png?v=2",
   },
 };
 
