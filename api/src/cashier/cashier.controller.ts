@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  Res,
+} from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe';
 import { CashierService } from './cashier.service';
@@ -104,6 +113,17 @@ const WalletAdjustSchema = z.object({
 export class CashierController {
   constructor(private readonly cashier: CashierService) {}
 
+  private parseDateOrThrow(raw: string | undefined, field: string): Date {
+    if (!raw) {
+      throw new BadRequestException(`${field} wajib diisi`);
+    }
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) {
+      throw new BadRequestException(`${field} tidak valid`);
+    }
+    return d;
+  }
+
   @Get('summary/dashboard')
   dashboardSummary() {
     return this.cashier.getDashboardSummary();
@@ -112,6 +132,87 @@ export class CashierController {
   @Get('summary/today')
   todaySummary() {
     return this.cashier.getTodaySummary();
+  }
+
+  @Get('reports/financial')
+  financialReport(
+    @Query('from') fromRaw?: string,
+    @Query('to') toRaw?: string,
+  ) {
+    const now = new Date();
+    const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
+    const from = fromRaw ? this.parseDateOrThrow(fromRaw, 'from') : defaultFrom;
+    const to = toRaw ? this.parseDateOrThrow(toRaw, 'to') : now;
+    return this.cashier.getFinancialReport(from, to);
+  }
+
+  @Get('reports/balance-sheet')
+  balanceSheet(@Query('asOf') asOfRaw?: string) {
+    const asOf = asOfRaw ? this.parseDateOrThrow(asOfRaw, 'asOf') : undefined;
+    return this.cashier.getBalanceSheet(asOf);
+  }
+
+  @Get('reports/financial/export')
+  async exportFinancialReport(
+    @Query('from') fromRaw: string | undefined,
+    @Query('to') toRaw: string | undefined,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
+    const from = fromRaw ? this.parseDateOrThrow(fromRaw, 'from') : defaultFrom;
+    const to = toRaw ? this.parseDateOrThrow(toRaw, 'to') : now;
+
+    const report = await this.cashier.getFinancialReport(from, to);
+    const rows: string[][] = [
+      ['section', 'metric', 'value'],
+      ['period', 'from', report.period.from],
+      ['period', 'to', report.period.to],
+      ['sales', 'transactionCount', String(report.sales.transactionCount)],
+      ['sales', 'totalSales', String(report.sales.totalSales)],
+      ['sales', 'employeeSales', String(report.sales.employeeSales)],
+      ['sales', 'generalSales', String(report.sales.generalSales)],
+      ['movements', 'cashFromSales', String(report.movements.cashFromSales)],
+      ['movements', 'walletUsed', String(report.movements.walletUsed)],
+      [
+        'movements',
+        'debtAddedFromSales',
+        String(report.movements.debtAddedFromSales),
+      ],
+      ['movements', 'debtPayment', String(report.movements.debtPayment)],
+      [
+        'movements',
+        'walletTopupCredit',
+        String(report.movements.walletTopupCredit),
+      ],
+      ['ledgerSummary', 'debtAdd', String(report.ledgerSummary.debtAdd)],
+      ['ledgerSummary', 'debtPay', String(report.ledgerSummary.debtPay)],
+      [
+        'ledgerSummary',
+        'walletCredit',
+        String(report.ledgerSummary.walletCredit),
+      ],
+      ['ledgerSummary', 'walletDebit', String(report.ledgerSummary.walletDebit)],
+      [
+        'cashflowEstimate',
+        'totalCashIn',
+        String(report.cashflowEstimate.totalCashIn),
+      ],
+    ];
+    const esc = (v: string) => {
+      if (v.includes('"') || v.includes(',') || v.includes('\n')) {
+        return `"${v.replaceAll('"', '""')}"`;
+      }
+      return v;
+    };
+    const csv = `${rows.map((r) => r.map(esc).join(',')).join('\n')}\n`;
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="financial-report-${stamp}.csv"`,
+    );
+    res.send(csv);
   }
 
   @Get('employee-balance')

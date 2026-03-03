@@ -19,6 +19,18 @@ export class CashierService {
     return `${y}-${m}`;
   }
 
+  private startOfDay(d: Date): Date {
+    const x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  }
+
+  private endExclusiveDay(d: Date): Date {
+    const x = this.startOfDay(d);
+    x.setDate(x.getDate() + 1);
+    return x;
+  }
+
   async getTodaySummary() {
     const now = new Date();
     const start = new Date(now);
@@ -345,6 +357,158 @@ export class CashierService {
         topWalletEmployees,
         topFrequentEmployees,
       },
+    };
+  }
+
+  async getFinancialReport(from: Date, to: Date) {
+    const start = this.startOfDay(from);
+    const endExclusive = this.endExclusiveDay(to);
+    if (endExclusive <= start) {
+      throw new BadRequestException('Range tanggal tidak valid');
+    }
+
+    const [sales, txnAgg] = await Promise.all([
+      this.prisma.sale.findMany({
+        where: { createdAt: { gte: start, lt: endExclusive } },
+        select: {
+          id: true,
+          buyerType: true,
+          total: true,
+          cashPaid: true,
+          paidByMandatory: true,
+          addedDebt: true,
+        },
+      }),
+      this.prisma.accountTxn.groupBy({
+        by: ['type'],
+        where: { createdAt: { gte: start, lt: endExclusive } },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const sumTxn = (type: AccountTxnType) =>
+      txnAgg.find((x) => x.type === type)?._sum.amount ?? 0;
+
+    const totalSales = sales.reduce((s, x) => s + x.total, 0);
+    const totalCashFromSales = sales.reduce((s, x) => s + x.cashPaid, 0);
+    const totalWalletUsed = sales.reduce((s, x) => s + x.paidByMandatory, 0);
+    const totalNewDebt = sales.reduce((s, x) => s + x.addedDebt, 0);
+    const employeeSales = sales
+      .filter((x) => x.buyerType === 'EMPLOYEE')
+      .reduce((s, x) => s + x.total, 0);
+    const generalSales = sales
+      .filter((x) => x.buyerType === 'GENERAL')
+      .reduce((s, x) => s + x.total, 0);
+
+    const debtPayment = sumTxn(AccountTxnType.DEBT_PAY);
+    const walletCredit = sumTxn(AccountTxnType.WALLET_CREDIT);
+    const walletDebit = sumTxn(AccountTxnType.WALLET_DEBIT);
+    const debtAdd = sumTxn(AccountTxnType.DEBT_ADD);
+
+    return {
+      period: {
+        from: start.toISOString(),
+        to: new Date(endExclusive.getTime() - 1).toISOString(),
+      },
+      sales: {
+        transactionCount: sales.length,
+        totalSales,
+        employeeSales,
+        generalSales,
+      },
+      movements: {
+        cashFromSales: totalCashFromSales,
+        walletUsed: totalWalletUsed,
+        debtAddedFromSales: totalNewDebt,
+        debtPayment,
+        walletTopupCredit: walletCredit,
+      },
+      ledgerSummary: {
+        debtAdd,
+        debtPay: debtPayment,
+        walletCredit,
+        walletDebit,
+      },
+      cashflowEstimate: {
+        totalCashIn: totalCashFromSales + debtPayment + walletCredit,
+      },
+    };
+  }
+
+  async getBalanceSheet(asOf?: Date) {
+    const endExclusive = asOf
+      ? this.endExclusiveDay(asOf)
+      : this.endExclusiveDay(new Date());
+
+    const [products, txnAgg] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          stock: true,
+          price: true,
+          discountPct: true,
+          taxPct: true,
+        },
+      }),
+      this.prisma.accountTxn.groupBy({
+        by: ['type'],
+        where: { createdAt: { lt: endExclusive } },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const sumTxn = (type: AccountTxnType) =>
+      txnAgg.find((x) => x.type === type)?._sum.amount ?? 0;
+
+    const inventoryValue = products.reduce((sum, p) => {
+      const discountPerUnit = Math.trunc((p.price * p.discountPct) / 100);
+      const taxablePerUnit = p.price - discountPerUnit;
+      const taxPerUnit = Math.trunc((taxablePerUnit * p.taxPct) / 100);
+      const finalUnitPrice = taxablePerUnit + taxPerUnit;
+      return sum + Math.max(0, p.stock) * finalUnitPrice;
+    }, 0);
+
+    const walletCredit = sumTxn(AccountTxnType.WALLET_CREDIT);
+    const walletDebit = sumTxn(AccountTxnType.WALLET_DEBIT);
+    const debtAdd = sumTxn(AccountTxnType.DEBT_ADD);
+    const debtPay = sumTxn(AccountTxnType.DEBT_PAY);
+
+    const receivableEmployeeDebt = Math.max(0, debtAdd - debtPay);
+    const mandatoryWalletLiability = Math.max(0, walletCredit - walletDebit);
+
+    const salesCashAgg = await this.prisma.sale.aggregate({
+      where: { createdAt: { lt: endExclusive } },
+      _sum: { cashPaid: true },
+    });
+    const accumulatedCashEstimate =
+      (salesCashAgg._sum.cashPaid ?? 0) + debtPay + walletCredit;
+
+    const totalAssets =
+      accumulatedCashEstimate + inventoryValue + receivableEmployeeDebt;
+    const totalLiabilities = mandatoryWalletLiability;
+    const equity = totalAssets - totalLiabilities;
+
+    return {
+      asOf: new Date(endExclusive.getTime() - 1).toISOString(),
+      assets: {
+        cashEstimate: accumulatedCashEstimate,
+        inventoryValue,
+        receivableEmployeeDebt,
+        total: totalAssets,
+      },
+      liabilities: {
+        mandatoryWalletLiability,
+        total: totalLiabilities,
+      },
+      equity: {
+        total: equity,
+      },
+      notes: [
+        'cashEstimate dihitung dari akumulasi cashPaid sale + debtPay + walletCredit.',
+        'Biaya operasional dan pembelian stok belum dimodelkan, sehingga neraca bersifat estimasi operasional.',
+      ],
     };
   }
 

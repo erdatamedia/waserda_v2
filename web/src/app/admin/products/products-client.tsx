@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Product } from "@/lib/types";
 import { apiGet, apiSend } from "@/lib/api";
 
@@ -86,6 +86,7 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
   const [editActive, setEditActive] = useState<boolean>(true);
   const [page, setPage] = useState(1);
   const [categoryOptions, setCategoryOptions] = useState(defaultCategoryOptions);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -123,6 +124,53 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
 
   async function refresh() {
     window.location.reload();
+  }
+
+  function triggerImportFile() {
+    importInputRef.current?.click();
+  }
+
+  async function exportProductsCsv() {
+    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:3000";
+    window.open(`${apiBase}/stock/products/export-csv?all=true`, "_blank");
+  }
+
+  async function onImportCsvFile(file?: File) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      alert("File import harus berformat .csv");
+      return;
+    }
+    try {
+      const csv = await file.text();
+      const res = await apiSend<{
+        total: number;
+        created: number;
+        updated: number;
+        failed: number;
+        errors: Array<{ row: number; message: string }>;
+      }>("/stock/products/import-csv", "POST", { csv });
+      if (res.failed > 0) {
+        const preview = res.errors
+          .slice(0, 5)
+          .map((x) => `Baris ${x.row}: ${x.message}`)
+          .join("\n");
+        alert(
+          `Import selesai.\nTotal: ${res.total}\nCreated: ${res.created}\nUpdated: ${res.updated}\nFailed: ${res.failed}\n\n${preview}`,
+        );
+      } else {
+        alert(
+          `Import berhasil.\nTotal: ${res.total}\nCreated: ${res.created}\nUpdated: ${res.updated}`,
+        );
+      }
+      await refresh();
+    } catch (e) {
+      alert(`Gagal import CSV: ${errMsg(e)}`);
+    } finally {
+      if (importInputRef.current) {
+        importInputRef.current.value = "";
+      }
+    }
   }
 
   function validateCommon(payload: {
@@ -320,6 +368,25 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
         </div>
 
         <div className="flex gap-2">
+          <button
+            onClick={() => void exportProductsCsv()}
+            className="rounded-xl border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50"
+          >
+            Export Excel (CSV)
+          </button>
+          <button
+            onClick={triggerImportFile}
+            className="rounded-xl border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50"
+          >
+            Import CSV
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => void onImportCsvFile(e.target.files?.[0])}
+            className="hidden"
+          />
           <input
             value={q}
             onChange={(e) => {

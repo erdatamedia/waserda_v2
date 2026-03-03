@@ -2,18 +2,43 @@
 
 import Link from "next/link";
 import { useState, useSyncExternalStore } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
-const nav = [
-  { href: "/admin", label: "Dashboard" },
-  { href: "/admin/products", label: "Produk" },
-  { href: "/admin/stock/in", label: "Stok Masuk" },
-  { href: "/admin/stock/adjust", label: "Stok Adjust" },
-  { href: "/admin/stock/latest", label: "Histori Stok" },
-  { href: "/admin/cashier", label: "Kasir" },
-  { href: "/admin/wallet", label: "Saldo Wajib" },
-  { href: "/admin/employees", label: "Pegawai" },
-  { href: "/admin/master/categories", label: "Master Kategori" },
+type NavItem = { href: string; label: string };
+type NavGroup = { key: "produk" | "pegawai" | "laporan" | "kasir"; label: string; items: NavItem[] };
+
+const dashboardNav: NavItem = { href: "/admin", label: "Dashboard" };
+
+const navGroups: NavGroup[] = [
+  {
+    key: "produk",
+    label: "Produk",
+    items: [
+      { href: "/admin/products", label: "Produk" },
+      { href: "/admin/master/categories", label: "Master Kategori" },
+      { href: "/admin/stock/in", label: "Stok Masuk" },
+      { href: "/admin/stock/adjust", label: "Stok Adjust" },
+      { href: "/admin/stock/latest", label: "Histori Stok" },
+    ],
+  },
+  {
+    key: "pegawai",
+    label: "Pegawai",
+    items: [
+      { href: "/admin/employees", label: "Pegawai" },
+      { href: "/admin/wallet", label: "Saldo Wajib" },
+    ],
+  },
+  {
+    key: "laporan",
+    label: "Laporan Keuangan",
+    items: [{ href: "/admin/reports", label: "Laporan Keuangan" }],
+  },
+  {
+    key: "kasir",
+    label: "Kasir",
+    items: [{ href: "/admin/cashier", label: "Kasir" }],
+  },
 ];
 
 export default function AdminLayout({
@@ -22,7 +47,14 @@ export default function AdminLayout({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [openGroups, setOpenGroups] = useState<Record<NavGroup["key"], boolean>>({
+    produk: true,
+    pegawai: true,
+    laporan: true,
+    kasir: true,
+  });
   const hydrated = useSyncExternalStore(
     () => () => {},
     () => true,
@@ -44,10 +76,14 @@ export default function AdminLayout({
         .find((x) => x.startsWith("waserda_role="))
         ?.split("=")[1] ?? ""
     : "";
-  const visibleNav =
+  const visibleGroups =
     sessionRole === "CASHIER"
-      ? nav.filter((x) => x.href === "/admin" || x.href === "/admin/cashier")
-      : nav;
+      ? navGroups.filter((g) => g.key === "kasir")
+      : navGroups;
+
+  function toggleGroup(key: NavGroup["key"]) {
+    setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
 
   function logout() {
     document.cookie = "waserda_role=; path=/; max-age=0";
@@ -82,16 +118,51 @@ export default function AdminLayout({
                 <div className="text-base font-semibold">Admin</div>
               </div>
 
-              <nav className="p-2">
-                <ul className="space-y-1">
-                  {visibleNav.map((item) => (
-                    <li key={item.href}>
-                      <Link
-                        href={item.href}
-                        className="block rounded-lg px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 hover:text-gray-900"
+              <nav className="max-h-[calc(100dvh-170px)] overflow-y-auto p-2">
+                <ul className="space-y-2">
+                  <li>
+                    <Link
+                      href={dashboardNav.href}
+                      className={`block rounded-lg px-3 py-2 text-sm font-medium hover:bg-gray-100 hover:text-gray-900 ${
+                        pathname === dashboardNav.href
+                          ? "bg-gray-100 text-gray-900"
+                          : "text-gray-700"
+                      }`}
+                    >
+                      {dashboardNav.label}
+                    </Link>
+                  </li>
+
+                  {visibleGroups.map((group) => (
+                    <li key={group.key} className="rounded-lg border border-gray-100">
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(group.key)}
+                        className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-semibold text-gray-800 hover:bg-gray-50"
                       >
-                        {item.label}
-                      </Link>
+                        <span>Toggle {group.label}</span>
+                        <span className="text-xs text-gray-500">
+                          {openGroups[group.key] ? "−" : "+"}
+                        </span>
+                      </button>
+                      {openGroups[group.key] ? (
+                        <ul className="space-y-1 px-2 pb-2">
+                          {group.items.map((item) => (
+                            <li key={item.href}>
+                              <Link
+                                href={item.href}
+                                className={`block rounded-lg px-3 py-2 text-sm font-medium hover:bg-gray-100 hover:text-gray-900 ${
+                                  pathname === item.href
+                                    ? "bg-gray-100 text-gray-900"
+                                    : "text-gray-700"
+                                }`}
+                              >
+                                {item.label}
+                              </Link>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
                     </li>
                   ))}
                 </ul>

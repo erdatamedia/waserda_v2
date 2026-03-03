@@ -6,7 +6,9 @@ import {
   Patch,
   Post,
   Query,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe';
 import { StockService } from './stock.service';
@@ -48,6 +50,10 @@ const StockAdjustSchema = z.object({
   note: z.string().min(3),
 });
 
+const ImportProductsCsvSchema = z.object({
+  csv: z.string().min(1),
+});
+
 @Controller('stock')
 export class StockController {
   constructor(private readonly stock: StockService) {}
@@ -57,6 +63,31 @@ export class StockController {
   listProducts(@Query('all') all?: string) {
     const includeInactive = all === '1' || all === 'true';
     return this.stock.listProducts(includeInactive);
+  }
+
+  @Get('products/export-csv')
+  async exportProductsCsv(
+    @Query('all') all: string | undefined,
+    @Res() res: Response,
+  ) {
+    const includeInactive = all === '1' || all === 'true';
+    const products = await this.stock.listProducts(includeInactive);
+    const csv = this.stock.exportProductsCsv(products);
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="products-${stamp}.csv"`,
+    );
+    res.send(csv);
+  }
+
+  @Post('products/import-csv')
+  importProductsCsv(
+    @Body(new ZodValidationPipe(ImportProductsCsvSchema))
+    body: { csv: string },
+  ) {
+    return this.stock.importProductsCsv(body.csv);
   }
 
   // detail produk
