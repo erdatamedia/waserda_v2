@@ -1,0 +1,54 @@
+{
+  "requests": [
+    {
+      "productName": "Go Rio",
+      "qty": -17,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "Tictic",
+      "qty": -3,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "Kriptos",
+      "qty": -3,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "Spix",
+      "qty": -3,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "P Bali",
+      "qty": -8,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "Panda",
+      "qty": -1,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "Swisco",
+      "qty": -1,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "Gula",
+      "qty": -1,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "Tinta epson 664 C",
+      "qty": -1,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    },
+    {
+      "productName": "kertas a4",
+      "qty": -1,
+      "note": "STOCK_OPNAME_DESEMBER_2025_RUSAK"
+    }
+  ]
+}

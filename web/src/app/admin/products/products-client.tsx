@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { Product } from "@/lib/types";
-import { apiGet, apiSend } from "@/lib/api";
+import { apiBaseUrl, apiGet, apiSend, parseError } from "@/lib/api";
 
 type Props = {
   initialProducts: Product[];
@@ -87,6 +87,11 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
   const [page, setPage] = useState(1);
   const [categoryOptions, setCategoryOptions] = useState(defaultCategoryOptions);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const importXlsxInputRef = useRef<HTMLInputElement | null>(null);
+  const [dryRunImport, setDryRunImport] = useState(true);
+  const [importMode, setImportMode] = useState<"replace-stock" | "append-stock">(
+    "replace-stock",
+  );
 
   useEffect(() => {
     (async () => {
@@ -130,8 +135,12 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
     importInputRef.current?.click();
   }
 
+  function triggerImportXlsxFile() {
+    importXlsxInputRef.current?.click();
+  }
+
   async function exportProductsCsv() {
-    const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:3000";
+    const apiBase = apiBaseUrl();
     window.open(`${apiBase}/stock/products/export-csv?all=true`, "_blank");
   }
 
@@ -149,7 +158,14 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
         updated: number;
         failed: number;
         errors: Array<{ row: number; message: string }>;
-      }>("/stock/products/import-csv", "POST", { csv });
+        dryRun: boolean;
+      }>(
+        `/stock/products/import-csv?dryRun=${dryRunImport ? "true" : "false"}&mode=${importMode}`,
+        "POST",
+        {
+          csv,
+        },
+      );
       if (res.failed > 0) {
         const preview = res.errors
           .slice(0, 5)
@@ -158,17 +174,81 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
         alert(
           `Import selesai.\nTotal: ${res.total}\nCreated: ${res.created}\nUpdated: ${res.updated}\nFailed: ${res.failed}\n\n${preview}`,
         );
+      } else if (res.dryRun) {
+        alert(
+          `Dry-run selesai (tanpa simpan).\nTotal: ${res.total}\nAkan create: ${res.created}\nAkan update: ${res.updated}`,
+        );
       } else {
         alert(
           `Import berhasil.\nTotal: ${res.total}\nCreated: ${res.created}\nUpdated: ${res.updated}`,
         );
       }
-      await refresh();
+      if (!res.dryRun) await refresh();
     } catch (e) {
       alert(`Gagal import CSV: ${errMsg(e)}`);
     } finally {
       if (importInputRef.current) {
         importInputRef.current.value = "";
+      }
+    }
+  }
+
+  async function onImportXlsxFile(file?: File) {
+    if (!file) return;
+    const isXlsx =
+      file.name.toLowerCase().endsWith(".xlsx") ||
+      file.type ===
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    if (!isXlsx) {
+      alert("File import harus berformat .xlsx");
+      return;
+    }
+
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(
+        `${apiBaseUrl()}/stock/products/import-xlsx?dryRun=${dryRunImport ? "true" : "false"}&mode=${importMode}`,
+        {
+        method: "POST",
+        body: fd,
+        },
+      );
+      if (!res.ok) {
+        throw new Error(await parseError(res));
+      }
+      const data = (await res.json()) as {
+        total: number;
+        created: number;
+        updated: number;
+        failed: number;
+        errors: Array<{ row: number; message: string }>;
+        dryRun: boolean;
+      };
+
+      if (data.failed > 0) {
+        const preview = data.errors
+          .slice(0, 5)
+          .map((x) => `Baris ${x.row}: ${x.message}`)
+          .join("\n");
+        alert(
+          `Import Excel selesai.\nTotal: ${data.total}\nCreated: ${data.created}\nUpdated: ${data.updated}\nFailed: ${data.failed}\n\n${preview}`,
+        );
+      } else if (data.dryRun) {
+        alert(
+          `Dry-run Excel selesai (tanpa simpan).\nTotal: ${data.total}\nAkan create: ${data.created}\nAkan update: ${data.updated}`,
+        );
+      } else {
+        alert(
+          `Import Excel berhasil.\nTotal: ${data.total}\nCreated: ${data.created}\nUpdated: ${data.updated}`,
+        );
+      }
+      if (!data.dryRun) await refresh();
+    } catch (e) {
+      alert(`Gagal import Excel: ${errMsg(e)}`);
+    } finally {
+      if (importXlsxInputRef.current) {
+        importXlsxInputRef.current.value = "";
       }
     }
   }
@@ -368,6 +448,13 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
         </div>
 
         <div className="flex gap-2">
+          <a
+            href="/TEMPLATE_STOCK_OPNAME_WASERDA.xlsx"
+            download
+            className="rounded-xl border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50"
+          >
+            Contoh Template Excel
+          </a>
           <button
             onClick={() => void exportProductsCsv()}
             className="rounded-xl border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50"
@@ -380,11 +467,42 @@ export default function ProductsClient({ initialProducts, loadError }: Props) {
           >
             Import CSV
           </button>
+          <button
+            onClick={triggerImportXlsxFile}
+            className="rounded-xl border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50"
+          >
+            Import Excel
+          </button>
+          <label className="inline-flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={dryRunImport}
+              onChange={(e) => setDryRunImport(e.target.checked)}
+            />
+            Dry-run
+          </label>
+          <select
+            value={importMode}
+            onChange={(e) =>
+              setImportMode(e.target.value as "replace-stock" | "append-stock")
+            }
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="replace-stock">Mode: Replace Stock</option>
+            <option value="append-stock">Mode: Append Stock</option>
+          </select>
           <input
             ref={importInputRef}
             type="file"
             accept=".csv,text/csv"
             onChange={(e) => void onImportCsvFile(e.target.files?.[0])}
+            className="hidden"
+          />
+          <input
+            ref={importXlsxInputRef}
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={(e) => void onImportXlsxFile(e.target.files?.[0])}
             className="hidden"
           />
           <input

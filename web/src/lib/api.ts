@@ -1,4 +1,4 @@
-function baseUrl() {
+export function apiBaseUrl() {
   return (
     process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
     "http://localhost:3000"
@@ -24,7 +24,7 @@ export async function parseError(res: Response): Promise<string> {
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const url = `${baseUrl()}${path}`;
+  const url = `${apiBaseUrl()}${path}`;
   let res: Response;
   try {
     res = await fetch(url, { cache: "no-store" });
@@ -41,7 +41,7 @@ export async function apiSend<T>(
   method: "POST" | "PATCH" | "DELETE",
   body?: unknown,
 ): Promise<T> {
-  const url = `${baseUrl()}${path}`;
+  const url = `${apiBaseUrl()}${path}`;
   let res: Response;
   try {
     res = await fetch(url, {

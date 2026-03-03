@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, type Product } from '@prisma/client';
+import * as XLSX from 'xlsx';
 import { PrismaService } from '../prisma/prisma.service';
 
 // NOTE: Avoid Prisma payload helper types here because ESLint type-checking may
@@ -367,62 +368,72 @@ export class StockService {
     return rows;
   }
 
-  async importProductsCsv(csv: string): Promise<{
+  private normalizeHeader(v: string): string {
+    return v
+      .trim()
+      .toLowerCase()
+      .replaceAll('.', '')
+      .replaceAll('_', ' ')
+      .replace(/\s+/g, ' ');
+  }
+
+  private parseIntSafe(v: string, def = 0): number {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : def;
+  }
+
+  private parseBoolSafe(v: string, def = true): boolean {
+    const s = v.trim().toLowerCase();
+    if (s === 'true' || s === '1' || s === 'yes') return true;
+    if (s === 'false' || s === '0' || s === 'no') return false;
+    return def;
+  }
+
+  private async importRows(
+    rows: Array<{
+      rowNo: number;
+      id: string;
+      name: string;
+      category: string;
+      barcode: string;
+      imageUrl: string;
+      price: number;
+      discountPct: number;
+      taxPct: number;
+      stock: number;
+      isActive: boolean;
+    }>,
+    dryRun = false,
+    mode: 'replace-stock' | 'append-stock' = 'replace-stock',
+  ): Promise<{
     total: number;
     created: number;
     updated: number;
     failed: number;
     errors: Array<{ row: number; message: string }>;
+    dryRun: boolean;
   }> {
-    const rows = this.parseCsvRows(csv);
-    if (rows.length < 2) {
-      throw new BadRequestException('CSV tidak valid / tidak ada data');
-    }
-
-    const header = rows[0].map((x) => x.trim());
-    const idx = (name: string) => header.findIndex((h) => h === name);
-    const required = ['name', 'category', 'price', 'stock'];
-    for (const f of required) {
-      if (idx(f) < 0) {
-        throw new BadRequestException(`Kolom wajib "${f}" tidak ditemukan`);
-      }
-    }
-
-    const parseIntSafe = (v: string, def = 0) => {
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.trunc(n) : def;
-    };
-    const parseBoolSafe = (v: string, def = true) => {
-      const s = v.trim().toLowerCase();
-      if (s === 'true' || s === '1' || s === 'yes') return true;
-      if (s === 'false' || s === '0' || s === 'no') return false;
-      return def;
-    };
-
     let created = 0;
     let updated = 0;
     let failed = 0;
     const errors: Array<{ row: number; message: string }> = [];
 
-    for (let r = 1; r < rows.length; r++) {
-      const line = rows[r];
-      const get = (name: string) => {
-        const i = idx(name);
-        return i >= 0 ? (line[i] ?? '').trim() : '';
-      };
-
-      const rowNo = r + 1;
+    for (const row of rows) {
       try {
-        const id = get('id');
-        const name = get('name');
-        const category = get('category');
-        const barcode = get('barcode');
-        const imageUrl = get('imageUrl');
-        const price = parseIntSafe(get('price'), -1);
-        const discountPct = parseIntSafe(get('discountPct'), 0);
-        const taxPct = parseIntSafe(get('taxPct'), 0);
-        const stock = parseIntSafe(get('stock'), -1);
-        const isActive = parseBoolSafe(get('isActive'), true);
+        const {
+          rowNo,
+          id,
+          name,
+          category,
+          barcode,
+          imageUrl,
+          price,
+          discountPct,
+          taxPct,
+          stock,
+          isActive,
+        } = row;
+        void rowNo;
 
         if (!name || name.length < 2) throw new Error('Nama minimal 2 karakter');
         if (!category) throw new Error('Kategori wajib diisi');
@@ -436,48 +447,266 @@ export class StockService {
         if (!existing && barcode) {
           existing = await this.prisma.product.findUnique({ where: { barcode } });
         }
+        if (!existing) {
+          existing = await this.prisma.product.findFirst({
+            where: { name: { equals: name, mode: 'insensitive' } },
+          });
+        }
 
         if (existing) {
-          await this.updateProduct(existing.id, {
-            name,
-            category,
-            barcode: barcode || undefined,
-            imageUrl: imageUrl || undefined,
-            price,
-            discountPct,
-            taxPct,
-            isActive,
-          });
+          const nextStock =
+            mode === 'append-stock'
+              ? Math.max(0, existing.stock) + Math.max(0, stock)
+              : stock;
+          if (!dryRun) {
+            await this.prisma.product.update({
+              where: { id: existing.id },
+              data: {
+                name,
+                category,
+                barcode: barcode || null,
+                imageUrl: imageUrl || null,
+                price,
+                discountPct,
+                taxPct,
+                stock: nextStock,
+                isActive,
+              },
+            });
+          }
           updated++;
         } else {
-          await this.createProduct({
-            name,
-            category,
-            barcode: barcode || undefined,
-            imageUrl: imageUrl || undefined,
-            price,
-            discountPct,
-            taxPct,
-            stock,
-            isActive,
-          });
+          if (!dryRun) {
+            await this.createProduct({
+              name,
+              category,
+              barcode: barcode || undefined,
+              imageUrl: imageUrl || undefined,
+              price,
+              discountPct,
+              taxPct,
+              stock,
+              isActive,
+            });
+          }
           created++;
         }
       } catch (e) {
         failed++;
         errors.push({
-          row: rowNo,
+          row: row.rowNo,
           message: e instanceof Error ? e.message : String(e),
         });
       }
     }
 
     return {
-      total: rows.length - 1,
+      total: rows.length,
       created,
       updated,
       failed,
       errors,
+      dryRun,
     };
+  }
+
+  async importProductsCsv(
+    csv: string,
+    dryRun = false,
+    mode: 'replace-stock' | 'append-stock' = 'replace-stock',
+  ): Promise<{
+    total: number;
+    created: number;
+    updated: number;
+    failed: number;
+    errors: Array<{ row: number; message: string }>;
+    dryRun: boolean;
+  }> {
+    const rows = this.parseCsvRows(csv);
+    if (rows.length < 2) {
+      throw new BadRequestException('CSV tidak valid / tidak ada data');
+    }
+
+    const header = rows[0].map((x) => this.normalizeHeader(x));
+    const idx = (name: string) => header.findIndex((h) => h === this.normalizeHeader(name));
+    const required = ['name', 'category', 'price', 'stock'];
+    for (const f of required) {
+      if (idx(f) < 0) {
+        throw new BadRequestException(`Kolom wajib "${f}" tidak ditemukan`);
+      }
+    }
+
+    const importRows: Array<{
+      rowNo: number;
+      id: string;
+      name: string;
+      category: string;
+      barcode: string;
+      imageUrl: string;
+      price: number;
+      discountPct: number;
+      taxPct: number;
+      stock: number;
+      isActive: boolean;
+    }> = [];
+    for (let r = 1; r < rows.length; r++) {
+      const line = rows[r];
+      const get = (name: string) => {
+        const i = idx(name);
+        return i >= 0 ? (line[i] ?? '').trim() : '';
+      };
+
+      importRows.push({
+        rowNo: r + 1,
+        id: get('id'),
+        name: get('name'),
+        category: get('category'),
+        barcode: get('barcode'),
+        imageUrl: get('imageUrl'),
+        price: this.parseIntSafe(get('price'), -1),
+        discountPct: this.parseIntSafe(get('discountPct'), 0),
+        taxPct: this.parseIntSafe(get('taxPct'), 0),
+        stock: this.parseIntSafe(get('stock'), -1),
+        isActive: this.parseBoolSafe(get('isActive'), true),
+      });
+    }
+
+    return await this.importRows(importRows, dryRun, mode);
+  }
+
+  async importProductsXlsx(
+    fileBuffer: Buffer,
+    sheetName?: string,
+    dryRun = false,
+    mode: 'replace-stock' | 'append-stock' = 'replace-stock',
+  ): Promise<{
+    total: number;
+    created: number;
+    updated: number;
+    failed: number;
+    errors: Array<{ row: number; message: string }>;
+    dryRun: boolean;
+  }> {
+    let workbook: XLSX.WorkBook;
+    try {
+      workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    } catch {
+      throw new BadRequestException('File Excel tidak valid');
+    }
+
+    const targetSheet =
+      (sheetName && workbook.Sheets[sheetName] ? sheetName : undefined) ??
+      (workbook.SheetNames.includes('SO') ? 'SO' : workbook.SheetNames[0]);
+    const sheet = workbook.Sheets[targetSheet];
+    if (!sheet) {
+      throw new BadRequestException('Sheet Excel tidak ditemukan');
+    }
+
+    const table = XLSX.utils.sheet_to_json<(string | number)[]>(sheet, {
+      header: 1,
+      raw: false,
+      defval: '',
+    });
+    if (!table || table.length === 0) {
+      throw new BadRequestException('Sheet kosong');
+    }
+
+    const normalizedRows = table.map((row) =>
+      row.map((x) => String(x ?? '').trim()),
+    );
+
+    let headerRowIdx = -1;
+    for (let i = 0; i < Math.min(20, normalizedRows.length); i++) {
+      const h = normalizedRows[i].map((x) => this.normalizeHeader(x));
+      if (
+        h.includes('nama barang') &&
+        h.includes('jumlah') &&
+        (h.includes('harga (rp)') || h.includes('harga rp') || h.includes('harga'))
+      ) {
+        headerRowIdx = i;
+        break;
+      }
+    }
+    if (headerRowIdx < 0) {
+      throw new BadRequestException(
+        'Header tidak ditemukan. Pastikan ada kolom Nama Barang, Jumlah, Harga (Rp).',
+      );
+    }
+
+    const header = normalizedRows[headerRowIdx].map((x) => this.normalizeHeader(x));
+    const idx = (...names: string[]) => {
+      for (const n of names) {
+        const i = header.indexOf(this.normalizeHeader(n));
+        if (i >= 0) return i;
+      }
+      return -1;
+    };
+
+    const iName = idx('nama barang', 'name');
+    const iQty = idx('jumlah', 'stock');
+    const iPrice = idx('harga (rp)', 'harga rp', 'harga', 'price');
+    const iCategory = idx('category', 'kategori');
+    const iBarcode = idx('barcode');
+    const iIsActive = idx('isactive', 'is active');
+    const iImage = idx('imageurl', 'image url');
+    const iDiscount = idx('discountpct', 'discount pct', 'diskon');
+    const iTax = idx('taxpct', 'tax pct', 'pajak');
+    const iId = idx('id');
+
+    if (iName < 0 || iQty < 0 || iPrice < 0) {
+      throw new BadRequestException(
+        'Kolom wajib tidak lengkap (Nama Barang, Jumlah, Harga).',
+      );
+    }
+
+    const aggregate = new Map<
+      string,
+      {
+        rowNo: number;
+        id: string;
+        name: string;
+        category: string;
+        barcode: string;
+        imageUrl: string;
+        price: number;
+        discountPct: number;
+        taxPct: number;
+        stock: number;
+        isActive: boolean;
+      }
+    >();
+
+    for (let r = headerRowIdx + 1; r < normalizedRows.length; r++) {
+      const row = normalizedRows[r];
+      const name = (row[iName] ?? '').trim();
+      if (!name) continue;
+
+      const key = name.toLowerCase();
+      const parsed = {
+        rowNo: r + 1,
+        id: iId >= 0 ? (row[iId] ?? '').trim() : '',
+        name,
+        category: iCategory >= 0 ? (row[iCategory] ?? '').trim() || 'OTHER' : 'OTHER',
+        barcode: iBarcode >= 0 ? (row[iBarcode] ?? '').trim() : '',
+        imageUrl: iImage >= 0 ? (row[iImage] ?? '').trim() : '',
+        price: this.parseIntSafe(row[iPrice] ?? '', -1),
+        discountPct:
+          iDiscount >= 0 ? this.parseIntSafe(row[iDiscount] ?? '', 0) : 0,
+        taxPct: iTax >= 0 ? this.parseIntSafe(row[iTax] ?? '', 0) : 0,
+        stock: this.parseIntSafe(row[iQty] ?? '', -1),
+        isActive:
+          iIsActive >= 0 ? this.parseBoolSafe(row[iIsActive] ?? '', true) : true,
+      };
+
+      if (!aggregate.has(key)) {
+        aggregate.set(key, parsed);
+      } else {
+        const prev = aggregate.get(key)!;
+        prev.stock = Math.max(0, prev.stock) + Math.max(0, parsed.stock);
+        if (prev.price <= 0 && parsed.price > 0) prev.price = parsed.price;
+      }
+    }
+
+    return await this.importRows([...aggregate.values()], dryRun, mode);
   }
 }

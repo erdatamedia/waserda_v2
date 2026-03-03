@@ -1,0 +1,2 @@
+id,name,category,barcode,price,discountPct,taxPct,stock,isActive,imageUrl
+,Contoh Produk,OTHER,,15000,0,0,10,true,

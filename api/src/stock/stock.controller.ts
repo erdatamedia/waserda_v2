@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,8 +8,11 @@ import {
   Post,
   Query,
   Res,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe';
 import { StockService } from './stock.service';
@@ -54,6 +58,12 @@ const ImportProductsCsvSchema = z.object({
   csv: z.string().min(1),
 });
 
+type UploadedExcelFile = {
+  originalname?: string;
+  mimetype?: string;
+  buffer: Buffer;
+};
+
 @Controller('stock')
 export class StockController {
   constructor(private readonly stock: StockService) {}
@@ -86,8 +96,38 @@ export class StockController {
   importProductsCsv(
     @Body(new ZodValidationPipe(ImportProductsCsvSchema))
     body: { csv: string },
+    @Query('dryRun') dryRun?: string,
+    @Query('mode') mode?: string,
   ) {
-    return this.stock.importProductsCsv(body.csv);
+    const runDry = dryRun === '1' || dryRun === 'true';
+    const importMode =
+      mode === 'append-stock' ? 'append-stock' : 'replace-stock';
+    return this.stock.importProductsCsv(body.csv, runDry, importMode);
+  }
+
+  @Post('products/import-xlsx')
+  @UseInterceptors(FileInterceptor('file'))
+  importProductsXlsx(
+    @UploadedFile() file: UploadedExcelFile | undefined,
+    @Query('sheet') sheet?: string,
+    @Query('dryRun') dryRun?: string,
+    @Query('mode') mode?: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('File Excel wajib diupload');
+    }
+    const name = file.originalname?.toLowerCase() ?? '';
+    const isXlsx =
+      name.endsWith('.xlsx') ||
+      file.mimetype ===
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    if (!isXlsx) {
+      throw new BadRequestException('Format file harus .xlsx');
+    }
+    const runDry = dryRun === '1' || dryRun === 'true';
+    const importMode =
+      mode === 'append-stock' ? 'append-stock' : 'replace-stock';
+    return this.stock.importProductsXlsx(file.buffer, sheet, runDry, importMode);
   }
 
   // detail produk
