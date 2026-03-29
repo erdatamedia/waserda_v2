@@ -13,6 +13,7 @@ import {
 import type { Response } from 'express';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe';
+import { CashierReportExportService } from './cashier-report-export.service';
 import { CashierService } from './cashier.service';
 
 type CreateSaleBody = {
@@ -147,7 +148,10 @@ const UpdateSaleSchema = z
 
 @Controller('cashier')
 export class CashierController {
-  constructor(private readonly cashier: CashierService) {}
+  constructor(
+    private readonly cashier: CashierService,
+    private readonly exportService: CashierReportExportService,
+  ) {}
 
   private parseDateOrThrow(raw: string | undefined, field: string): Date {
     if (!raw) {
@@ -198,57 +202,36 @@ export class CashierController {
     const defaultFrom = new Date(now.getFullYear(), now.getMonth(), 1);
     const from = fromRaw ? this.parseDateOrThrow(fromRaw, 'from') : defaultFrom;
     const to = toRaw ? this.parseDateOrThrow(toRaw, 'to') : now;
-
-    const report = await this.cashier.getFinancialReport(from, to);
-    const rows: string[][] = [
-      ['section', 'metric', 'value'],
-      ['period', 'from', report.period.from],
-      ['period', 'to', report.period.to],
-      ['sales', 'transactionCount', String(report.sales.transactionCount)],
-      ['sales', 'totalSales', String(report.sales.totalSales)],
-      ['sales', 'employeeSales', String(report.sales.employeeSales)],
-      ['sales', 'generalSales', String(report.sales.generalSales)],
-      ['movements', 'cashFromSales', String(report.movements.cashFromSales)],
-      ['movements', 'walletUsed', String(report.movements.walletUsed)],
-      [
-        'movements',
-        'debtAddedFromSales',
-        String(report.movements.debtAddedFromSales),
-      ],
-      ['movements', 'debtPayment', String(report.movements.debtPayment)],
-      [
-        'movements',
-        'walletTopupCredit',
-        String(report.movements.walletTopupCredit),
-      ],
-      ['ledgerSummary', 'debtAdd', String(report.ledgerSummary.debtAdd)],
-      ['ledgerSummary', 'debtPay', String(report.ledgerSummary.debtPay)],
-      [
-        'ledgerSummary',
-        'walletCredit',
-        String(report.ledgerSummary.walletCredit),
-      ],
-      ['ledgerSummary', 'walletDebit', String(report.ledgerSummary.walletDebit)],
-      [
-        'cashflowEstimate',
-        'totalCashIn',
-        String(report.cashflowEstimate.totalCashIn),
-      ],
-    ];
-    const esc = (v: string) => {
-      if (v.includes('"') || v.includes(',') || v.includes('\n')) {
-        return `"${v.replaceAll('"', '""')}"`;
-      }
-      return v;
-    };
-    const csv = `${rows.map((r) => r.map(esc).join(',')).join('\n')}\n`;
-    const stamp = new Date().toISOString().slice(0, 10);
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    const { buffer, fileName } =
+      await this.exportService.buildFinancialWorkbook(from, to);
     res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="financial-report-${stamp}.csv"`,
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
-    res.send(csv);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(buffer);
+  }
+
+  @Get('reports/shu/export')
+  async exportShuReport(
+    @Query('from') fromRaw: string | undefined,
+    @Query('to') toRaw: string | undefined,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const defaultFrom = new Date(now.getFullYear(), 0, 1);
+    const from = fromRaw ? this.parseDateOrThrow(fromRaw, 'from') : defaultFrom;
+    const to = toRaw ? this.parseDateOrThrow(toRaw, 'to') : now;
+    const { buffer, fileName } = await this.exportService.buildShuWorkbook(
+      from,
+      to,
+    );
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(buffer);
   }
 
   @Get('employee-balance')

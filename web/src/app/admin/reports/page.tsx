@@ -68,6 +68,9 @@ export default async function ReportsPage({ searchParams }: Props) {
   const to = typeof sp.to === "string" && sp.to ? sp.to : dateInputValue(now);
   const asOf =
     typeof sp.asOf === "string" && sp.asOf ? sp.asOf : dateInputValue(now);
+  const apiBaseUrl =
+    process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+    "http://localhost:3000";
 
   let loadError: string | undefined;
   let financial: FinancialReport | null = null;
@@ -124,18 +127,21 @@ export default async function ReportsPage({ searchParams }: Props) {
           />
         </label>
         <div className="flex items-end">
-          <div className="flex w-full gap-2">
+          <div className="flex w-full flex-wrap gap-2">
             <button className="w-full rounded-xl bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800">
               Tampilkan
             </button>
             <a
-              href={`${
-                process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
-                "http://localhost:3000"
-              }/cashier/reports/financial/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`}
+              href={`${apiBaseUrl}/cashier/reports/financial/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`}
               className="whitespace-nowrap rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm hover:bg-gray-50"
             >
-              Export Excel
+              Export Keuangan (.xlsx)
+            </a>
+            <a
+              href={`${apiBaseUrl}/cashier/reports/shu/export?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`}
+              className="whitespace-nowrap rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm hover:bg-gray-50"
+            >
+              Export SHU (.xlsx)
             </a>
           </div>
         </div>
